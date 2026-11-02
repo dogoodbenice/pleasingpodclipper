@@ -1,0 +1,12 @@
+venv/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+data/media/*
+!data/media/.gitkeep
+data/exports/*
+!data/exports/.gitkeep
+data/projects/*
+!data/projects/.gitkeep
+.DS_Store
