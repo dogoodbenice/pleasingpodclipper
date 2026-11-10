@@ -22,7 +22,7 @@ if not os.path.exists(VENV_PYTHON):
 
 def run():
     print("=" * 60)
-    print("🎙️  Starting PleasingPodClipper Studio...")
+    print("Starting PleasingPodClipper Studio...")
     print("=" * 60)
 
     is_dev = "--dev" in sys.argv
@@ -43,17 +43,17 @@ def run():
     target_url = "http://127.0.0.1:8000/"
 
     if is_dev:
-        print("⚡ Starting Vite dev server...")
+        print("Starting Vite dev server...")
         frontend_proc = subprocess.Popen(["npm", "run", "dev"], cwd=FRONTEND_DIR)
         target_url = "http://localhost:5173/"
 
     # Wait for server to become responsive
-    print("⏳ Waiting for server to start...")
+    print("Waiting for server to start...")
     ready = False
     for _ in range(20):
         time.sleep(0.3)
         if backend_proc.poll() is not None:
-            print("❌ Backend failed to start. Exiting.")
+            print("Error: Backend failed to start. Exiting.")
             sys.exit(1)
         try:
             with urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=1) as resp:
@@ -64,9 +64,9 @@ def run():
             continue
 
     if not ready:
-        print("⚠️ Warning: Server is taking longer than expected to respond.")
+        print("Warning: Server is taking longer than expected to respond.")
 
-    print(f"\n🚀 Studio ready! Opening browser at: {target_url}\n")
+    print(f"\nStudio ready. Opening browser at: {target_url}\n")
     print("Press CTRL+C in this terminal to stop the studio.\n")
     try:
         webbrowser.open(target_url)
@@ -74,7 +74,7 @@ def run():
         pass
 
     def shutdown(sig, frame):
-        print("\n🛑 Shutting down PleasingPodClipper...")
+        print("\nShutting down PleasingPodClipper...")
         backend_proc.terminate()
         if frontend_proc:
             frontend_proc.terminate()
