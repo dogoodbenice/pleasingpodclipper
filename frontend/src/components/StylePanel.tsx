@@ -167,6 +167,45 @@ export const StylePanel: React.FC<StylePanelProps> = ({
           </button>
         </div>
 
+        <div className="pt-2">
+          <span className="text-[11px] text-slate-400 mb-1.5 block">Active Highlight Effect</span>
+          <div className="grid grid-cols-4 gap-1.5">
+            {[
+              { id: 'color', label: 'Color' },
+              { id: 'pill', label: 'Pill' },
+              { id: 'pop', label: 'Pop' },
+              { id: 'underline', label: 'Line' },
+            ].map((style) => (
+              <button
+                key={style.id}
+                onClick={() => updateVisual('highlightStyle', style.id as any)}
+                className={`py-1.5 px-2 rounded-lg border text-center text-[11px] transition-all ${
+                  (visuals.highlightStyle || 'color') === style.id
+                    ? 'bg-cyan-500/10 border-cyan-500 text-cyan-400 font-bold'
+                    : 'bg-slate-900 border-slate-800 hover:border-slate-700 text-slate-300'
+                }`}
+              >
+                {style.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {visuals.highlightStyle === 'pill' && (
+          <div className="pt-1">
+            <span className="text-[11px] text-slate-400 mb-1 block">Pill Background Color</span>
+            <div className="flex items-center space-x-2">
+              <input
+                type="color"
+                value={visuals.highlightBgColor || '#06B6D4'}
+                onChange={(e) => updateVisual('highlightBgColor', e.target.value)}
+                className="w-7 h-7 rounded border-none cursor-pointer bg-transparent"
+              />
+              <span className="font-mono text-[11px]">{visuals.highlightBgColor || '#06B6D4'}</span>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-3 pt-1">
           <div>
             <span className="text-[11px] text-slate-400 mb-1 block">Active Word Highlight</span>

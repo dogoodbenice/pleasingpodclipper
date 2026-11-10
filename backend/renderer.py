@@ -38,6 +38,124 @@ def hex_to_rgb(hex_str: Optional[str], default: Tuple[int, int, int] = (255, 255
     except Exception:
         return default
 
+def is_image_token(token: Dict[str, Any]) -> bool:
+    return token.get("type") == "image" and bool(token.get("imageUrl"))
+
+
+def is_renderable_token(token: Dict[str, Any]) -> bool:
+    if is_image_token(token):
+        return True
+    return bool(str(token.get("word", "")).strip())
+
+
+def is_wave_token(token: Dict[str, Any]) -> bool:
+    return not is_image_token(token) and token.get("effect") == "wave"
+
+
+def layout_arc_run(
+    chars: List[Dict[str, Any]],
+    font_size: int,
+    origin_x: float,
+    baseline_y: float,
+    variant: int = 0,
+) -> List[Dict[str, Any]]:
+    total_width = sum(c["width"] for c in chars) or float(font_size)
+    v = abs(int(variant)) % 5
+    walked = 0.0
+    glyphs = []
+
+    if v == 0:
+        radius = max(font_size * 1.8, total_width / 1.6)
+        sweep = min(math.pi * 0.9, total_width / radius)
+        rise = radius * (1 - math.cos(sweep / 2))
+        cx = origin_x + total_width / 2
+        cy = baseline_y + radius - rise * 0.15
+        for c in chars:
+            t = 0.5 if total_width <= 0 else (walked + c["width"] / 2) / total_width
+            walked += c["width"]
+            theta = -sweep / 2 + t * sweep
+            glyphs.append({
+                "char": c["char"],
+                "x": cx + radius * math.sin(theta),
+                "y": cy - radius * math.cos(theta),
+                "angle": theta,
+                "token_index": c["token_index"],
+            })
+    elif v == 1:
+        radius = max(font_size * 1.8, total_width / 1.6)
+        sweep = min(math.pi * 0.9, total_width / radius)
+        rise = radius * (1 - math.cos(sweep / 2))
+        cx = origin_x + total_width / 2
+        cy = baseline_y - radius + rise * 0.15
+        for c in chars:
+            t = 0.5 if total_width <= 0 else (walked + c["width"] / 2) / total_width
+            walked += c["width"]
+            theta = -sweep / 2 + t * sweep
+            glyphs.append({
+                "char": c["char"],
+                "x": cx + radius * math.sin(theta),
+                "y": cy + radius * math.cos(theta),
+                "angle": -theta,
+                "token_index": c["token_index"],
+            })
+    else:
+        cycles = 1.5 if v == 4 else 1.0
+        sign = -1.0 if v == 3 else 1.0
+        amplitude = min(font_size * 0.5, total_width * 0.18)
+        for c in chars:
+            t = 0.5 if total_width <= 0 else (walked + c["width"] / 2) / total_width
+            walked += c["width"]
+            phase = t * math.pi * 2 * cycles
+            y_offset = sign * math.sin(phase) * amplitude
+            slope = sign * math.cos(phase) * amplitude * ((math.pi * 2 * cycles) / max(1.0, total_width))
+            angle = math.atan(slope) * 0.85
+            glyphs.append({
+                "char": c["char"],
+                "x": origin_x + (walked - c["width"] / 2),
+                "y": baseline_y + y_offset,
+                "angle": angle,
+                "token_index": c["token_index"],
+            })
+    return glyphs
+
+
+def load_image_cache(urls: List[str]) -> Dict[str, Image.Image]:
+    cache: Dict[str, Image.Image] = {}
+    for url in urls:
+        path = resolve_media_path(url)
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with Image.open(path) as img:
+                cache[url] = img.convert("RGBA")
+        except Exception as e:
+            print("Failed to load overlay/inline image:", url, e)
+    return cache
+
+
+def draw_rotated_glyph(
+    frame: Image.Image,
+    char: str,
+    font: ImageFont.FreeTypeFont,
+    color: Tuple[int, int, int],
+    x: float,
+    y: float,
+    angle_rad: float,
+) -> None:
+    dummy = ImageDraw.Draw(frame)
+    bbox = dummy.textbbox((0, 0), char, font=font)
+    gw = max(1, bbox[2] - bbox[0] + 8)
+    gh = max(1, bbox[3] - bbox[1] + 8)
+    glyph = Image.new("RGBA", (gw, gh), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glyph)
+    gdraw.text((4 - bbox[0], 4 - bbox[1]), char, font=font, fill=color + (255,))
+    degrees = -math.degrees(angle_rad)
+    rotated = glyph.rotate(degrees, expand=True, resample=Image.Resampling.BICUBIC)
+    px = int(x - rotated.width / 2)
+    py = int(y - rotated.height / 2)
+    frame.paste(rotated, (px, py), rotated)
+
+
 def get_dimensions(aspect_ratio: str) -> Tuple[int, int]:
     if aspect_ratio == "9:16":
         return 1080, 1920
@@ -138,13 +256,26 @@ def render_video(
 
     # 2. Prepare Subtitle Segments
     segments = project_data.get("caption_segments", [])
+    overlays = project_data.get("overlays", []) or []
     caption_font_size = int(width * (0.075 if aspect_ratio == "9:16" else 0.065))
     line_height = int(caption_font_size * 1.35)
     font_bold = get_system_font(caption_font_size, bold=True)
-    font_regular = get_system_font(caption_font_size, bold=False)
+
+    image_urls: List[str] = []
+    for overlay in overlays:
+        if overlay.get("url"):
+            image_urls.append(overlay["url"])
+    for seg in segments:
+        for token in seg.get("words", []):
+            if is_image_token(token) and token.get("imageUrl"):
+                image_urls.append(token["imageUrl"])
+    image_cache = load_image_cache(image_urls)
 
     active_word_color = hex_to_rgb(visuals.get("activeWordColor", "#999999"), (153, 153, 153))
     inactive_word_color = hex_to_rgb(visuals.get("inactiveWordColor", "#111111"), (17, 17, 17))
+    highlight_style = visuals.get("highlightStyle", "color")
+    highlight_bg_color = hex_to_rgb(visuals.get("highlightBgColor", "#06B6D4"), (6, 182, 212))
+    font_pop = get_system_font(int(caption_font_size * 1.15), bold=True)
     vis_color = hex_to_rgb(visuals.get("visualizerColor", "#111111"), (17, 17, 17))
     cta_bg = hex_to_rgb(visuals.get("ctaBgColor", "#222222"), (34, 34, 34))
     cta_text_color = hex_to_rgb(visuals.get("ctaTextColor", "#F5A623"), (245, 166, 35))
@@ -190,6 +321,21 @@ def render_video(
         frame = base_image.copy()
         draw = ImageDraw.Draw(frame)
 
+        # Timed overlays (behind captions)
+        for overlay in overlays:
+            if not (overlay.get("start", 0) <= current_time <= overlay.get("end", 0)):
+                continue
+            img = image_cache.get(overlay.get("url"))
+            if img is None:
+                continue
+            scale = float(overlay.get("scale", 0.35))
+            draw_w = int(width * scale)
+            draw_h = max(1, int(draw_w * (img.height / max(1, img.width))))
+            ox = int(float(overlay.get("x", 0.5)) * width - draw_w / 2)
+            oy = int(float(overlay.get("y", 0.45)) * height - draw_h / 2)
+            resized = img.resize((draw_w, draw_h), Image.Resampling.LANCZOS)
+            frame.paste(resized, (ox, oy), resized)
+
         # Draw Captions
         active_seg = None
         for seg in segments:
@@ -198,18 +344,17 @@ def render_video(
                 break
 
         if active_seg:
-            words = active_seg.get("words", [])
+            words = [w for w in active_seg.get("words", []) if is_renderable_token(w)]
             caption_mode = visuals.get("captionAnimation", "karaoke")
 
             if caption_mode == "hormozi":
-                # Hormozi: Show single punchy active word in center
                 active_w = None
                 for w in words:
+                    if is_image_token(w):
+                        continue
                     if w.get("start", 0) <= current_time <= w.get("end", 0):
                         active_w = w
                         break
-                if not active_w and words:
-                    active_w = words[0]
 
                 if active_w:
                     word_str = active_w.get("word", "").upper()
@@ -225,31 +370,60 @@ def render_video(
                         font=h_font
                     )
             else:
-                # Karaoke Mode: Wrap text and highlight active word
+                items: List[Dict[str, Any]] = []
+                idx = 0
+                while idx < len(words):
+                    token = words[idx]
+                    if is_image_token(token):
+                        img = image_cache.get(token.get("imageUrl"))
+                        box_h = int(caption_font_size * 1.4)
+                        aspect = (img.width / img.height) if img else 1.0
+                        items.append({
+                            "kind": "image",
+                            "token": token,
+                            "width": box_h * aspect,
+                            "height": box_h,
+                        })
+                        idx += 1
+                        continue
+                    if is_wave_token(token):
+                        run = []
+                        while idx < len(words) and is_wave_token(words[idx]):
+                            run.append(words[idx])
+                            idx += 1
+                        chars = []
+                        total_w = 0
+                        for ti, tkn in enumerate(run):
+                            text = tkn.get("word", "") + (" " if ti < len(run) - 1 else "")
+                            for ch in text:
+                                bbox = draw.textbbox((0, 0), ch, font=font_bold)
+                                cw = bbox[2] - bbox[0]
+                                chars.append({"char": ch, "width": cw, "token_index": ti})
+                                total_w += cw
+                        items.append({"kind": "wave", "tokens": run, "width": total_w, "chars": chars})
+                        continue
+
+                    token_str = token.get("word", "") + " "
+                    bbox = draw.textbbox((0, 0), token_str, font=font_bold)
+                    items.append({
+                        "kind": "word",
+                        "token": token,
+                        "width": bbox[2] - bbox[0],
+                        "is_active": token.get("start", 0) <= current_time <= token.get("end", 0),
+                    })
+                    idx += 1
+
                 lines: List[List[Dict[str, Any]]] = [[]]
                 curr_w = 0
-
-                for token in words:
-                    token_str = token.get("word", "") + " "
-                    token_font = font_bold if token.get("bold") else font_regular
-                    bbox = draw.textbbox((0, 0), token_str, font=token_font)
-                    w_box = bbox[2] - bbox[0]
-
-                    if curr_w + w_box > max_line_width and lines[-1]:
+                for item in items:
+                    if curr_w + item["width"] > max_line_width and lines[-1]:
                         lines.append([])
                         curr_w = 0
+                    lines[-1].append(item)
+                    curr_w += item["width"]
 
-                    is_active = token.get("start", 0) <= current_time <= token.get("end", 0)
-                    lines[-1].append({
-                        "token": token,
-                        "str": token.get("word", ""),
-                        "space_w": w_box,
-                        "is_active": is_active,
-                        "font": token_font
-                    })
-                    curr_w += w_box
-
-                total_caption_h = len(lines) * line_height
+                extra_rise = caption_font_size * 0.55 if any(it["kind"] == "wave" for line in lines for it in line) else 0
+                total_caption_h = len(lines) * line_height + extra_rise
                 start_y = height // 2 - total_caption_h // 2
 
                 for line_idx, line in enumerate(lines):
@@ -257,17 +431,91 @@ def render_video(
                     line_x = pad_x
 
                     for item in line:
+                        if item["kind"] == "image":
+                            img = image_cache.get(item["token"].get("imageUrl"))
+                            if img is not None:
+                                resized = img.resize(
+                                    (max(1, int(item["width"])), max(1, int(item["height"]))),
+                                    Image.Resampling.LANCZOS,
+                                )
+                                frame.paste(
+                                    resized,
+                                    (int(line_x), int(line_y - item["height"] / 2)),
+                                    resized,
+                                )
+                            line_x += item["width"] + caption_font_size * 0.15
+                            continue
+
+                        if item["kind"] == "wave":
+                            first_tok = item["tokens"][0] if item["tokens"] else {}
+                            tok_var = first_tok.get("waveVariant")
+                            if tok_var is None:
+                                tok_id = str(first_tok.get("id", "0"))
+                                tok_var = sum(ord(ch) for ch in tok_id) % 5
+                            glyphs = layout_arc_run(
+                                item["chars"],
+                                caption_font_size,
+                                line_x,
+                                line_y + caption_font_size * 0.4,
+                                variant=int(tok_var),
+                            )
+                            for g in glyphs:
+                                tok = item["tokens"][g["token_index"]]
+                                is_active = tok.get("start", 0) <= current_time <= tok.get("end", 0)
+                                color = hex_to_rgb(
+                                    tok.get("color"),
+                                    active_word_color if is_active else inactive_word_color,
+                                )
+                                draw_rotated_glyph(
+                                    frame, g["char"], font_bold, color, g["x"], g["y"], g["angle"]
+                                )
+                            line_x += item["width"]
+                            continue
+
                         tok = item["token"]
                         is_active = item["is_active"]
-                        f_font = font_bold if is_active or tok.get("bold") else font_regular
+                        word_str = tok.get("word", "")
 
                         if is_active:
                             color = hex_to_rgb(tok.get("color"), active_word_color)
+                            w_bbox = draw.textbbox((0, 0), word_str, font=font_bold)
+                            w_width = w_bbox[2] - w_bbox[0]
+
+                            if highlight_style == "pill":
+                                pill_pad_x = int(caption_font_size * 0.22)
+                                pill_h = int(caption_font_size * 1.15)
+                                pill_radius = int(caption_font_size * 0.25)
+                                draw.rounded_rectangle(
+                                    (
+                                        int(line_x - pill_pad_x),
+                                        int(line_y - (pill_h - (w_bbox[3] - w_bbox[1])) / 2),
+                                        int(line_x + w_width + pill_pad_x),
+                                        int(line_y + pill_h - (pill_h - (w_bbox[3] - w_bbox[1])) / 2),
+                                    ),
+                                    radius=pill_radius,
+                                    fill=highlight_bg_color + (255,),
+                                )
+                                draw.text((line_x, line_y), word_str, fill=color + (255,), font=font_bold)
+                            elif highlight_style == "pop":
+                                pop_bbox = draw.textbbox((0, 0), word_str, font=font_pop)
+                                pop_w = pop_bbox[2] - pop_bbox[0]
+                                pop_x = line_x - (pop_w - w_width) / 2
+                                pop_y = line_y - (pop_bbox[3] - pop_bbox[1] - (w_bbox[3] - w_bbox[1])) / 2
+                                draw.text((pop_x, pop_y), word_str, fill=color + (255,), font=font_pop)
+                            else:
+                                draw.text((line_x, line_y), word_str, fill=color + (255,), font=font_bold)
+                                if highlight_style == "underline":
+                                    line_h = max(3, int(caption_font_size * 0.09))
+                                    line_u_y = line_y + int(caption_font_size * 1.15)
+                                    draw.rounded_rectangle(
+                                        (int(line_x), int(line_u_y), int(line_x + w_width), int(line_u_y + line_h)),
+                                        radius=line_h // 2,
+                                        fill=color + (255,),
+                                    )
                         else:
                             color = hex_to_rgb(tok.get("color"), inactive_word_color)
-
-                        draw.text((line_x, line_y), item["str"], fill=color + (255,), font=f_font)
-                        line_x += item["space_w"]
+                            draw.text((line_x, line_y), word_str, fill=color + (255,), font=font_bold)
+                        line_x += item["width"]
 
         # Draw Progress Bar / Visualizer (Bottom-Left)
         progress = min(1.0, max(0.0, (current_time - clip_start) / duration))

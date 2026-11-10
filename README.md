@@ -21,6 +21,20 @@ Designed for the **Agreeably Podcast** and general podcast creators.
   - Dual kinetic caption animation styles:
     - **Karaoke Mode:** Wrapped multi-line text with dynamic active-word highlight.
     - **Hormozi Mode:** Punchy, centered word-by-word display.
+- **Highlight Styles & Kinetic Caption Animation:**
+  - **4 Active Highlight Effects**:
+    - `Color`: Clean accent color switch.
+    - `Pill`: Background accent pill box (Alex Hormozi / modern reels style) with custom pill color.
+    - `Pop`: Word subtly scales up (`1.15x`) on beat without pushing neighbor words.
+    - `Underline`: Thick rounded accent bar drawn beneath the active word.
+  - Dual modes: **Karaoke** (multi-line) and **Hormozi** (punchy centered word-by-word).
+  - **Wavy / Arc Text Effect**: Position characters along undulating rainbow waves.
+- **Fast Keyboard Shortcuts for Editing:**
+  - `Space` / `K`: Play & Pause
+  - `J` / `Left Arrow`: Rewind 2s (Hold Shift for 5s)
+  - `L` / `Right Arrow`: Fast Forward 2s (Hold Shift for 5s)
+  - `[` and `]`: Set clip In and Out points to current playhead
+  - Dedicated shortcuts cheat-sheet modal accessible in the top header bar.
 - **Customizable Visual Canvas (WYSIWYG 60FPS Preview):**
   - **Header:** Podcast title, episode title, and uploaded cover art/logo.
   - **Progress Visualizers:** Minimalist line + dot scrubber (matching screenshot) or animated audio frequency spectrum bars.

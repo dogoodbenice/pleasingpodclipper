@@ -5,15 +5,20 @@ import {
   Sparkles, 
   Sliders, 
   FileText, 
-  Download
+  Download,
+  Keyboard,
+  Undo2,
+  Redo2
 } from 'lucide-react';
-import { ProjectDraft, VisualSettings, CaptionSegment, ClipRange } from './types';
+import { ProjectDraft, VisualSettings, CaptionSegment, ClipRange, OverlayAsset } from './types';
 import { VideoCanvas } from './components/VideoCanvas';
 import { WaveformTimeline } from './components/WaveformTimeline';
 import { TranscriptEditor } from './components/TranscriptEditor';
 import { StylePanel } from './components/StylePanel';
 import { DraftsModal } from './components/DraftsModal';
 import { ExportModal } from './components/ExportModal';
+import { ShortcutsModal } from './components/ShortcutsModal';
+import { Tooltip } from './components/Tooltip';
 import { uploadAudio, transcribeRange, saveProject, getProject } from './api';
 
 const DEFAULT_VISUALS: VisualSettings = {
@@ -35,6 +40,8 @@ const DEFAULT_VISUALS: VisualSettings = {
   fontSize: 48,
   activeWordColor: '#999999',
   inactiveWordColor: '#111111',
+  highlightStyle: 'color',
+  highlightBgColor: '#06B6D4',
 };
 
 export const App: React.FC = () => {
@@ -48,6 +55,7 @@ export const App: React.FC = () => {
     clip_range: { start: 0, end: 30 },
     visuals: DEFAULT_VISUALS,
     caption_segments: [],
+    overlays: [],
   });
 
   // Audio Playback State
@@ -59,13 +67,69 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'transcript' | 'style'>('transcript');
   const [isDraftsModalOpen, setIsDraftsModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
   const [logoImage, setLogoImage] = useState<HTMLImageElement | null>(null);
+  const [mediaImages, setMediaImages] = useState<Record<string, HTMLImageElement>>({});
 
   // Auto-save debounce timer
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Trigger Debounced Auto-Save
+  const triggerAutoSave = useCallback((draft: ProjectDraft) => {
+    if (!draft.audio_path) return;
+    setSaveStatus('saving');
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        const saved = await saveProject(draft);
+        if (saved.id && !draft.id) {
+          setCurrentProject((prev) => ({ ...prev, id: saved.id }));
+        }
+        setSaveStatus('saved');
+      } catch (err) {
+        console.error('Auto-save error:', err);
+      }
+    }, 1200);
+  }, []);
+
+  // Undo / Redo History
+  const [history, setHistory] = useState<ProjectDraft[]>([]);
+  const [future, setFuture] = useState<ProjectDraft[]>([]);
+
+  const recordHistory = useCallback((draft: ProjectDraft) => {
+    setHistory((prev) => [...prev.slice(-29), JSON.parse(JSON.stringify(draft))]);
+    setFuture([]);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    setHistory((prevHistory) => {
+      if (prevHistory.length === 0) return prevHistory;
+      const previous = prevHistory[prevHistory.length - 1];
+      const newHistory = prevHistory.slice(0, prevHistory.length - 1);
+
+      setFuture((prevFuture) => [JSON.parse(JSON.stringify(currentProject)), ...prevFuture]);
+      setCurrentProject(previous);
+      triggerAutoSave(previous);
+      return newHistory;
+    });
+  }, [currentProject, triggerAutoSave]);
+
+  const handleRedo = useCallback(() => {
+    setFuture((prevFuture) => {
+      if (prevFuture.length === 0) return prevFuture;
+      const next = prevFuture[0];
+      const newFuture = prevFuture.slice(1);
+
+      setHistory((prevHistory) => [...prevHistory.slice(-29), JSON.parse(JSON.stringify(currentProject))]);
+      setCurrentProject(next);
+      triggerAutoSave(next);
+      return newFuture;
+    });
+  }, [currentProject, triggerAutoSave]);
 
 
   // Load logo image if url changes
@@ -78,6 +142,28 @@ export const App: React.FC = () => {
       setLogoImage(null);
     }
   }, [currentProject.visuals.logoUrl]);
+
+  useEffect(() => {
+    const urls = new Set<string>();
+    (currentProject.overlays || []).forEach((o) => urls.add(o.url));
+    currentProject.caption_segments.forEach((seg) => {
+      seg.words.forEach((w) => {
+        if (w.type === 'image' && w.imageUrl) urls.add(w.imageUrl);
+      });
+    });
+
+    urls.forEach((url) => {
+      setMediaImages((prev) => {
+        if (prev[url]) return prev;
+        const img = new Image();
+        img.src = url;
+        img.onload = () => {
+          setMediaImages((current) => ({ ...current, [url]: img }));
+        };
+        return { ...prev, [url]: img };
+      });
+    });
+  }, [currentProject.overlays, currentProject.caption_segments]);
 
   // Audio time updater
   useEffect(() => {
@@ -107,39 +193,31 @@ export const App: React.FC = () => {
     };
   }, [currentProject.clip_range]);
 
-  // Trigger Debounced Auto-Save
-  const triggerAutoSave = useCallback((draft: ProjectDraft) => {
-    if (!draft.audio_path) return;
-    setSaveStatus('saving');
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-
-    saveTimeoutRef.current = setTimeout(async () => {
-      try {
-        const saved = await saveProject(draft);
-        if (saved.id && !draft.id) {
-          setCurrentProject((prev) => ({ ...prev, id: saved.id }));
-        }
-        setSaveStatus('saved');
-      } catch (err) {
-        console.error('Auto-save error:', err);
-      }
-    }, 1200);
-  }, []);
 
   // Update handlers
   const handleVisualsChange = (visuals: VisualSettings) => {
+    recordHistory(currentProject);
     const updated = { ...currentProject, visuals };
     setCurrentProject(updated);
     triggerAutoSave(updated);
   };
 
   const handleSegmentsChange = (caption_segments: CaptionSegment[]) => {
+    recordHistory(currentProject);
     const updated = { ...currentProject, caption_segments };
     setCurrentProject(updated);
     triggerAutoSave(updated);
   };
 
+  const handleOverlaysChange = (overlays: OverlayAsset[]) => {
+    recordHistory(currentProject);
+    const updated = { ...currentProject, overlays };
+    setCurrentProject(updated);
+    triggerAutoSave(updated);
+  };
+
   const handleClipRangeChange = (clip_range: ClipRange) => {
+    recordHistory(currentProject);
     const updated = { ...currentProject, clip_range };
     setCurrentProject(updated);
     triggerAutoSave(updated);
@@ -165,6 +243,62 @@ export const App: React.FC = () => {
     }
   };
 
+  // Global Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      // Undo: Cmd+Z / Ctrl+Z (without shift)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      // Redo: Cmd+Shift+Z / Ctrl+Shift+Z or Cmd+Y / Ctrl+Y
+      if (
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'z' || e.key === 'Z')) ||
+        ((e.metaKey || e.ctrlKey) && (e.key === 'y' || e.key === 'Y'))
+      ) {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        handleTogglePlay();
+      } else if (e.key === 'j' || e.key === 'J' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handleSeek(Math.max(0, currentTime - (e.shiftKey ? 5 : 2)));
+      } else if (e.key === 'l' || e.key === 'L' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleSeek(Math.min(currentProject.audio_duration, currentTime + (e.shiftKey ? 5 : 2)));
+      } else if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        handleTogglePlay();
+      } else if (e.key === '[') {
+        e.preventDefault();
+        const clampedStart = Math.min(currentTime, currentProject.clip_range.end - 0.5);
+        handleClipRangeChange({ ...currentProject.clip_range, start: Math.max(0, clampedStart) });
+      } else if (e.key === ']') {
+        e.preventDefault();
+        const clampedEnd = Math.max(currentTime, currentProject.clip_range.start + 0.5);
+        handleClipRangeChange({ ...currentProject.clip_range, end: Math.min(currentProject.audio_duration, clampedEnd) });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentTime, currentProject.audio_duration, currentProject.clip_range, isPlaying, handleUndo, handleRedo]);
+
   // Upload handler
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -187,9 +321,12 @@ export const App: React.FC = () => {
           episodeTitle: file.name.replace(/\.[^/.]+$/, ''),
         },
         caption_segments: [],
+        overlays: [],
       };
 
       setCurrentProject(newProj);
+      setHistory([]);
+      setFuture([]);
       if (audioRef.current) {
         audioRef.current.src = res.url;
         audioRef.current.load();
@@ -225,7 +362,9 @@ export const App: React.FC = () => {
   const handleLoadProject = async (id: string) => {
     try {
       const proj = await getProject(id);
-      setCurrentProject(proj);
+      setCurrentProject({ ...proj, overlays: proj.overlays || [] });
+      setHistory([]);
+      setFuture([]);
       if (audioRef.current) {
         audioRef.current.src = proj.audio_path;
         audioRef.current.load();
@@ -246,7 +385,10 @@ export const App: React.FC = () => {
       clip_range: { start: 0, end: 30 },
       visuals: DEFAULT_VISUALS,
       caption_segments: [],
+      overlays: [],
     });
+    setHistory([]);
+    setFuture([]);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = '';
@@ -289,37 +431,77 @@ export const App: React.FC = () => {
               {saveStatus === 'saved' ? 'Saved' : 'Saving...'}
             </span>
           </div>
+
+          {/* Undo and Redo Controls */}
+          <div className="flex items-center space-x-1 pl-2 border-l border-slate-800">
+            <Tooltip title="Undo" description="Revert your last modification" shortcut="⌘Z" delay={1000}>
+              <button
+                onClick={handleUndo}
+                disabled={history.length === 0}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:text-slate-400 disabled:hover:bg-transparent transition-colors"
+                aria-label="Undo"
+              >
+                <Undo2 size={15} />
+              </button>
+            </Tooltip>
+            <Tooltip title="Redo" description="Restore previously undone modification" shortcut="⇧⌘Z" delay={1000}>
+              <button
+                onClick={handleRedo}
+                disabled={future.length === 0}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:text-slate-400 disabled:hover:bg-transparent transition-colors"
+                aria-label="Redo"
+              >
+                <Redo2 size={15} />
+              </button>
+            </Tooltip>
+          </div>
         </div>
 
         {/* Header Right Actions */}
         <div className="flex items-center space-x-3">
-          <button
-            onClick={() => setIsDraftsModalOpen(true)}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700"
-          >
-            <FolderOpen size={14} className="text-cyan-400" />
-            <span>Drafts</span>
-          </button>
+          <Tooltip title="Keyboard Shortcuts" description="View keyboard navigation and editing controls" shortcut="?" delay={1000}>
+            <button
+              onClick={() => setIsShortcutsOpen(true)}
+              className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-slate-850 hover:bg-slate-750 text-xs font-semibold text-slate-300 border border-slate-750 transition-colors"
+            >
+              <Keyboard size={14} className="text-cyan-400" />
+              <span className="hidden sm:inline">Shortcuts</span>
+            </button>
+          </Tooltip>
 
-          <label className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 cursor-pointer">
-            <Upload size={14} className="text-amber-400" />
-            <span>{isUploading ? 'Uploading...' : 'Load Audio'}</span>
-            <input
-              type="file"
-              accept="audio/*"
-              onChange={handleAudioUpload}
-              className="hidden"
-            />
-          </label>
+          <Tooltip title="Saved Drafts" description="Open or switch between saved clip projects" delay={1000}>
+            <button
+              onClick={() => setIsDraftsModalOpen(true)}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 transition-colors"
+            >
+              <FolderOpen size={14} className="text-cyan-400" />
+              <span>Drafts</span>
+            </button>
+          </Tooltip>
 
-          <button
-            onClick={() => setIsExportModalOpen(true)}
-            disabled={!currentProject.audio_path}
-            className="flex items-center space-x-1.5 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs shadow-md shadow-cyan-500/20 disabled:opacity-50"
-          >
-            <Download size={14} />
-            <span>Export Clip</span>
-          </button>
+          <Tooltip title="Load Audio" description="Upload a new podcast MP3, WAV, or M4A file" delay={1000}>
+            <label className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 cursor-pointer transition-colors">
+              <Upload size={14} className="text-amber-400" />
+              <span>{isUploading ? 'Uploading...' : 'Load Audio'}</span>
+              <input
+                type="file"
+                accept="audio/*"
+                onChange={handleAudioUpload}
+                className="hidden"
+              />
+            </label>
+          </Tooltip>
+
+          <Tooltip title="Export MP4" description="Render and download high-resolution video clip" delay={1000}>
+            <button
+              onClick={() => setIsExportModalOpen(true)}
+              disabled={!currentProject.audio_path}
+              className="flex items-center space-x-1.5 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all"
+            >
+              <Download size={14} />
+              <span>Export Clip</span>
+            </button>
+          </Tooltip>
         </div>
       </header>
 
@@ -358,8 +540,12 @@ export const App: React.FC = () => {
             {activeTab === 'transcript' ? (
               <TranscriptEditor
                 segments={currentProject.caption_segments}
+                overlays={currentProject.overlays || []}
                 currentTime={currentTime}
+                clipStart={currentProject.clip_range.start}
+                clipEnd={currentProject.clip_range.end}
                 onSegmentsChange={handleSegmentsChange}
+                onOverlaysChange={handleOverlaysChange}
                 onSeek={handleSeek}
                 onTriggerTranscribe={handleTranscribeRange}
                 isTranscribing={isTranscribing}
@@ -402,7 +588,9 @@ export const App: React.FC = () => {
                 clipStart={currentProject.clip_range.start}
                 clipEnd={currentProject.clip_range.end}
                 segments={currentProject.caption_segments}
+                overlays={currentProject.overlays || []}
                 logoImage={logoImage}
+                mediaImages={mediaImages}
                 isPlaying={isPlaying}
               />
             </div>
@@ -439,6 +627,12 @@ export const App: React.FC = () => {
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
         project={currentProject}
+      />
+
+      {/* Keyboard Shortcuts Modal */}
+      <ShortcutsModal
+        isOpen={isShortcutsOpen}
+        onClose={() => setIsShortcutsOpen(false)}
       />
     </div>
   );

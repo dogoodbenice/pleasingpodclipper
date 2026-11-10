@@ -10,3 +10,4 @@ data/exports/*
 data/projects/*
 !data/projects/.gitkeep
 .DS_Store
+.cursor/

@@ -36,24 +36,33 @@ def transcribe_audio_slice(
         words = []
         if seg.words:
             for w in seg.words:
+                cleaned = w.word.strip()
+                if not cleaned:
+                    continue
                 words.append({
                     "id": str(uuid.uuid4())[:8],
-                    "word": w.word.strip(),
+                    "word": cleaned,
                     "start": round(w.start + start_offset, 3),
                     "end": round(w.end + start_offset, 3),
-                    "bold": False,
-                    "color": None
+                    "bold": True,
+                    "color": None,
+                    "type": "word",
+                    "effect": "none",
                 })
         else:
             # Fallback if word-level wasn't available
-            words.append({
-                "id": str(uuid.uuid4())[:8],
-                "word": seg.text.strip(),
-                "start": round(seg.start + start_offset, 3),
-                "end": round(seg.end + start_offset, 3),
-                "bold": False,
-                "color": None
-            })
+            fallback = seg.text.strip()
+            if fallback:
+                words.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "word": fallback,
+                    "start": round(seg.start + start_offset, 3),
+                    "end": round(seg.end + start_offset, 3),
+                    "bold": True,
+                    "color": None,
+                    "type": "word",
+                    "effect": "none",
+                })
             
         results.append({
             "id": str(uuid.uuid4())[:8],

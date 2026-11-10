@@ -50,7 +50,8 @@ def test_full_render_pipeline(tmp_path):
                 "end": 2.5,
                 "text": "None of these things exist, does it?",
                 "words": [
-                    {"word": "None", "start": 0.0, "end": 0.3, "bold": True, "color": None},
+                    {"word": "None", "start": 0.0, "end": 0.3, "effect": "wave", "color": None},
+                    {"word": "", "start": 0.25, "end": 0.28, "color": None},
                     {"word": "of", "start": 0.3, "end": 0.5, "bold": True, "color": None},
                     {"word": "these", "start": 0.5, "end": 0.9, "bold": True, "color": None},
                     {"word": "things", "start": 0.9, "end": 1.4, "bold": True, "color": None},

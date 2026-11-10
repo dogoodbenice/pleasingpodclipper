@@ -1,6 +1,15 @@
 import os
 import subprocess
-from backend.renderer import render_video
+from PIL import Image
+from backend.renderer import render_video, is_renderable_token, is_wave_token
+
+def test_empty_tokens_are_skipped():
+    assert is_renderable_token({"word": ""}) is False
+    assert is_renderable_token({"word": "   "}) is False
+    assert is_renderable_token({"word": "yeah"}) is True
+    assert is_renderable_token({"type": "image", "imageUrl": "/media/a.png"}) is True
+    assert is_wave_token({"word": "YEAH", "effect": "wave"}) is True
+    assert is_wave_token({"type": "image", "imageUrl": "x", "effect": "wave"}) is False
 
 def test_video_render(tmp_path):
     # 1. Create 3s sine audio
@@ -13,6 +22,11 @@ def test_video_render(tmp_path):
         test_audio
     ]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+    overlay_png = str(tmp_path / "overlay.png")
+    Image.new("RGBA", (80, 80), (255, 120, 0, 255)).save(overlay_png)
+    inline_png = str(tmp_path / "inline.png")
+    Image.new("RGBA", (64, 40), (0, 180, 255, 255)).save(inline_png)
 
     # 2. Build mock project data
     project_data = {
@@ -42,15 +56,20 @@ def test_video_render(tmp_path):
                 "end": 2.5,
                 "text": "None of these things exist, does it?",
                 "words": [
-                    {"word": "None", "start": 0.0, "end": 0.3, "bold": True, "color": None},
-                    {"word": "of", "start": 0.3, "end": 0.5, "bold": True, "color": None},
-                    {"word": "these", "start": 0.5, "end": 0.9, "bold": True, "color": None},
-                    {"word": "things", "start": 0.9, "end": 1.4, "bold": True, "color": None},
-                    {"word": "exist,", "start": 1.4, "end": 1.9, "bold": True, "color": None},
-                    {"word": "does", "start": 1.9, "end": 2.2, "bold": False, "color": "#06B6D4"},
-                    {"word": "it?", "start": 2.2, "end": 2.5, "bold": False, "color": None},
+                    {"word": "None", "start": 0.0, "end": 0.3, "effect": "wave", "color": None},
+                    {"word": "", "start": 0.3, "end": 0.4, "color": None},
+                    {"word": "of", "start": 0.3, "end": 0.5, "color": None},
+                    {"word": "these", "start": 0.5, "end": 0.9, "color": None},
+                    {"word": "things", "start": 0.9, "end": 1.4, "color": None},
+                    {"word": "exist,", "start": 1.4, "end": 1.9, "color": None},
+                    {"type": "image", "word": "", "imageUrl": inline_png, "start": 1.5, "end": 1.8},
+                    {"word": "does", "start": 1.9, "end": 2.2, "color": "#06B6D4"},
+                    {"word": "it?", "start": 2.2, "end": 2.5, "color": None},
                 ]
             }
+        ],
+        "overlays": [
+            {"id": "ov1", "url": overlay_png, "start": 0.2, "end": 1.2, "x": 0.5, "y": 0.45, "scale": 0.2}
         ]
     }
 

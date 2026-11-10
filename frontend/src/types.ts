@@ -5,6 +5,10 @@ export interface WordToken {
   end: number;
   bold?: boolean;
   color?: string | null;
+  type?: 'word' | 'image';
+  imageUrl?: string;
+  effect?: 'none' | 'wave';
+  waveVariant?: number;
 }
 
 export interface CaptionSegment {
@@ -13,6 +17,16 @@ export interface CaptionSegment {
   end: number;
   text: string;
   words: WordToken[];
+}
+
+export interface OverlayAsset {
+  id: string;
+  url: string;
+  start: number;
+  end: number;
+  x: number;
+  y: number;
+  scale: number;
 }
 
 export interface VisualSettings {
@@ -29,12 +43,14 @@ export interface VisualSettings {
   ctaBgColor: string;
   ctaTextColor: string;
   visualizerStyle: 'minimal_dot' | 'waveform_bars';
-  visualizerColor: string;
   captionAnimation: 'karaoke' | 'hormozi';
+  visualizerColor: string;
   fontFamily: string;
   fontSize: number;
   activeWordColor: string;
   inactiveWordColor: string;
+  highlightStyle?: 'color' | 'pill' | 'pop' | 'underline';
+  highlightBgColor?: string;
 }
 
 export interface ClipRange {
@@ -54,6 +70,7 @@ export interface ProjectDraft {
   clip_range: ClipRange;
   visuals: VisualSettings;
   caption_segments: CaptionSegment[];
+  overlays?: OverlayAsset[];
 }
 
 export interface ProjectSummary {

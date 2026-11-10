@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
-import { VisualSettings, CaptionSegment, WordToken } from '../types';
+import { VisualSettings, CaptionSegment, WordToken, OverlayAsset } from '../types';
+import { isImageToken, isWaveToken, layoutArcRun, visibleTokens } from '../captionLayout';
 
 interface VideoCanvasProps {
   visuals: VisualSettings;
@@ -7,7 +8,9 @@ interface VideoCanvasProps {
   clipStart: number;
   clipEnd: number;
   segments: CaptionSegment[];
+  overlays?: OverlayAsset[];
   logoImage: HTMLImageElement | null;
+  mediaImages: Record<string, HTMLImageElement>;
   isPlaying: boolean;
 }
 
@@ -17,11 +20,12 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
   clipStart,
   clipEnd,
   segments,
+  overlays = [],
   logoImage,
+  mediaImages,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Compute canonical canvas dimensions based on aspect ratio
   const getCanvasDimensions = () => {
     switch (visuals.aspectRatio) {
       case '9:16':
@@ -42,7 +46,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // 1. Draw Background
     if (visuals.backgroundType === 'gradient' && visuals.gradientSecondaryColor) {
       const grad = ctx.createLinearGradient(0, 0, 0, height);
       grad.addColorStop(0, visuals.backgroundColor);
@@ -53,36 +56,30 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     }
     ctx.fillRect(0, 0, width, height);
 
-    // Padding & layout geometry
     const padX = width * 0.08;
     const topY = height * 0.08;
 
-    // 2. Draw Header: Podcast Title & Episode Title (Top-Left)
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
 
-    // Podcast Title (Bold)
     const titleSize = Math.round(width * 0.048);
     ctx.font = `800 ${titleSize}px ${visuals.fontFamily}, sans-serif`;
     ctx.fillStyle = visuals.podcastTitleColor || '#111111';
     ctx.fillText(visuals.podcastTitle || 'Podcast Title', padX, topY);
 
-    // Episode Title (Secondary/Regular)
     const subtitleSize = Math.round(width * 0.038);
     ctx.font = `500 ${subtitleSize}px ${visuals.fontFamily}, sans-serif`;
     ctx.fillStyle = visuals.episodeTitleColor || '#666666';
     ctx.fillText(visuals.episodeTitle || 'Episode Title', padX, topY + titleSize * 1.25);
     ctx.restore();
 
-    // 3. Draw Cover Art / Logo (Top-Right)
     const logoSize = Math.round(width * 0.15);
     const logoX = width - padX - logoSize;
     const logoY = topY;
 
     if (logoImage && logoImage.complete) {
       ctx.save();
-      // Rounded rectangle clip
       const radius = logoSize * 0.15;
       ctx.beginPath();
       ctx.moveTo(logoX + radius, logoY);
@@ -99,7 +96,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       ctx.drawImage(logoImage, logoX, logoY, logoSize, logoSize);
       ctx.restore();
     } else {
-      // Placeholder badge if no image loaded
       ctx.save();
       ctx.fillStyle = '#E2E8F0';
       ctx.beginPath();
@@ -113,121 +109,234 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       ctx.restore();
     }
 
-    // 4. Draw Captions (Center)
-    // Find active segment for currentTime
+    const captionFontSize = Math.round(width * (visuals.aspectRatio === '9:16' ? 0.075 : 0.065));
+    const lineHeight = captionFontSize * 1.35;
+    const maxLineWidth = width - padX * 2;
+
+    // Overlays behind captions
+    overlays.forEach((overlay) => {
+      if (currentTime < overlay.start || currentTime > overlay.end) return;
+      const img = mediaImages[overlay.url];
+      if (!img || !img.complete || !img.naturalWidth) return;
+      const drawW = width * overlay.scale;
+      const drawH = drawW * (img.naturalHeight / img.naturalWidth);
+      const x = overlay.x * width - drawW / 2;
+      const y = overlay.y * height - drawH / 2;
+      ctx.drawImage(img, x, y, drawW, drawH);
+    });
+
     const activeSeg = segments.find(
       (s) => currentTime >= s.start - 0.05 && currentTime <= s.end + 0.1
     );
 
     if (activeSeg) {
       ctx.save();
-      const captionFontSize = Math.round(width * (visuals.aspectRatio === '9:16' ? 0.075 : 0.065));
-      const lineHeight = captionFontSize * 1.35;
+      const tokens = visibleTokens(activeSeg.words);
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
+      const captionFont = `800 ${captionFontSize}px ${visuals.fontFamily}, sans-serif`;
+      ctx.font = captionFont;
 
       if (visuals.captionAnimation === 'hormozi') {
-        // Hormozi mode: show 1-2 punchy words right in the dead center
-        const activeWord = activeSeg.words.find(
-          (w) => currentTime >= w.start && currentTime <= w.end
-        ) || activeSeg.words[0];
-
+        const activeWord = tokens.find(
+          (w) => !isImageToken(w) && currentTime >= w.start && currentTime <= w.end
+        );
         if (activeWord) {
-          ctx.font = `900 ${Math.round(captionFontSize * 1.4)}px ${visuals.fontFamily}, sans-serif`;
+          ctx.font = `800 ${Math.round(captionFontSize * 1.4)}px ${visuals.fontFamily}, sans-serif`;
           ctx.textAlign = 'center';
           ctx.fillStyle = activeWord.color || visuals.activeWordColor || '#06B6D4';
           ctx.fillText(activeWord.word.toUpperCase(), width / 2, height / 2);
         }
       } else {
-        // Karaoke Mode: Layout words on lines, highlighting active word
-        const maxLineWidth = width - padX * 2;
-        ctx.font = `800 ${captionFontSize}px ${visuals.fontFamily}, sans-serif`;
+        type LineItem =
+          | {
+              kind: 'word';
+              token: WordToken;
+              isActive: boolean;
+              width: number;
+            }
+          | {
+              kind: 'wave';
+              tokens: WordToken[];
+              width: number;
+              chars: { char: string; width: number; tokenIndex: number }[];
+            }
+          | {
+              kind: 'image';
+              token: WordToken;
+              width: number;
+              height: number;
+            };
 
-        // Measure & wrap words into lines
-        interface RenderWord {
-          token: WordToken;
-          isActive: boolean;
-          isPast: boolean;
-          width: number;
+        const items: LineItem[] = [];
+        let i = 0;
+        while (i < tokens.length) {
+          const token = tokens[i];
+          if (isImageToken(token)) {
+            const img = token.imageUrl ? mediaImages[token.imageUrl] : undefined;
+            const boxH = captionFontSize * 1.4;
+            const aspect = img && img.naturalWidth ? img.naturalWidth / img.naturalHeight : 1;
+            items.push({ kind: 'image', token, width: boxH * aspect, height: boxH });
+            i += 1;
+            continue;
+          }
+          if (isWaveToken(token)) {
+            const run: WordToken[] = [];
+            while (i < tokens.length && isWaveToken(tokens[i])) {
+              run.push(tokens[i]);
+              i += 1;
+            }
+            const chars: { char: string; width: number; tokenIndex: number }[] = [];
+            run.forEach((t, ti) => {
+              const text = t.word + (ti < run.length - 1 ? ' ' : '');
+              for (const ch of text) {
+                chars.push({ char: ch, width: ctx.measureText(ch).width, tokenIndex: ti });
+              }
+            });
+            const totalW = chars.reduce((s, c) => s + c.width, 0);
+            items.push({ kind: 'wave', tokens: run, width: totalW, chars });
+            continue;
+          }
+          const isActive = currentTime >= token.start && currentTime <= token.end;
+          const wordText = token.word + ' ';
+          items.push({
+            kind: 'word',
+            token,
+            isActive,
+            width: ctx.measureText(wordText).width,
+          });
+          i += 1;
         }
 
-        const lines: RenderWord[][] = [[]];
+        const lines: LineItem[][] = [[]];
         let currentLineWidth = 0;
-
-        activeSeg.words.forEach((token) => {
-          const isActive = currentTime >= token.start && currentTime <= token.end;
-          const isPast = currentTime > token.end;
-          const wordText = token.word + ' ';
-          const wordWidth = ctx.measureText(wordText).width;
-
-          if (currentLineWidth + wordWidth > maxLineWidth && lines[lines.length - 1].length > 0) {
+        items.forEach((item) => {
+          if (currentLineWidth + item.width > maxLineWidth && lines[lines.length - 1].length > 0) {
             lines.push([]);
             currentLineWidth = 0;
           }
-
-          lines[lines.length - 1].push({
-            token,
-            isActive,
-            isPast,
-            width: wordWidth,
-          });
-          currentLineWidth += wordWidth;
+          lines[lines.length - 1].push(item);
+          currentLineWidth += item.width;
         });
 
-        // Vertical center of the screen
-        const totalHeight = lines.length * lineHeight;
+        const extraRise = lines.some((line) => line.some((it) => it.kind === 'wave'))
+          ? captionFontSize * 0.55
+          : 0;
+        const totalHeight = lines.length * lineHeight + extraRise;
         const startY = height / 2 - totalHeight / 2 + lineHeight / 2;
 
         lines.forEach((line, lineIndex) => {
           let lineX = padX;
           const y = startY + lineIndex * lineHeight;
 
-          line.forEach(({ token, isActive, width: wWidth }) => {
-            ctx.save();
-            if (isActive) {
-              ctx.fillStyle = token.color || visuals.activeWordColor || '#999999';
-              ctx.font = `900 ${captionFontSize}px ${visuals.fontFamily}, sans-serif`;
-            } else {
-              ctx.fillStyle = token.color || visuals.inactiveWordColor || '#111111';
-              ctx.font = token.bold
-                ? `800 ${captionFontSize}px ${visuals.fontFamily}, sans-serif`
-                : `600 ${captionFontSize}px ${visuals.fontFamily}, sans-serif`;
+          line.forEach((item) => {
+            if (item.kind === 'image') {
+              const img = item.token.imageUrl ? mediaImages[item.token.imageUrl] : undefined;
+              if (img && img.complete) {
+                ctx.drawImage(img, lineX, y - item.height / 2, item.width, item.height);
+              }
+              lineX += item.width + captionFontSize * 0.15;
+              return;
             }
-            ctx.fillText(token.word, lineX, y);
+
+            if (item.kind === 'wave') {
+              const variant =
+                typeof item.tokens[0]?.waveVariant === 'number'
+                  ? item.tokens[0].waveVariant
+                  : item.tokens[0]?.id
+                  ? item.tokens[0].id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % 5
+                  : 0;
+              const arc = layoutArcRun(item.chars, captionFontSize, lineX, y, variant);
+              ctx.save();
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.font = captionFont;
+              arc.glyphs.forEach((g) => {
+                const tok = item.tokens[g.tokenIndex];
+                const isActive = currentTime >= tok.start && currentTime <= tok.end;
+                ctx.fillStyle = tok.color || (isActive ? visuals.activeWordColor : visuals.inactiveWordColor) || '#111111';
+                ctx.save();
+                ctx.translate(g.x, g.y);
+                ctx.rotate(g.angle);
+                ctx.fillText(g.char, 0, 0);
+                ctx.restore();
+              });
+              ctx.restore();
+              lineX += item.width;
+              return;
+            }
+
+            ctx.save();
+            ctx.font = captionFont;
+            const hStyle = visuals.highlightStyle || 'color';
+            const wordW = ctx.measureText(item.token.word).width;
+
+            if (item.isActive) {
+              if (hStyle === 'pill') {
+                const pillPadX = captionFontSize * 0.22;
+                const pillH = captionFontSize * 1.15;
+                const pillRadius = captionFontSize * 0.25;
+                ctx.fillStyle = visuals.highlightBgColor || '#06B6D4';
+                ctx.beginPath();
+                ctx.roundRect(
+                  lineX - pillPadX,
+                  y - pillH / 2,
+                  wordW + pillPadX * 2,
+                  pillH,
+                  pillRadius
+                );
+                ctx.fill();
+              } else if (hStyle === 'pop') {
+                const cx = lineX + wordW / 2;
+                ctx.translate(cx, y);
+                ctx.scale(1.15, 1.15);
+                ctx.translate(-cx, -y);
+              }
+
+              ctx.fillStyle = item.token.color || visuals.activeWordColor || '#999999';
+              ctx.fillText(item.token.word, lineX, y);
+
+              if (hStyle === 'underline') {
+                const lineH = Math.max(3, Math.round(captionFontSize * 0.09));
+                const lineY = y + captionFontSize * 0.55;
+                ctx.fillStyle = visuals.activeWordColor || '#06B6D4';
+                ctx.beginPath();
+                ctx.roundRect(lineX, lineY, wordW, lineH, lineH / 2);
+                ctx.fill();
+              }
+            } else {
+              ctx.fillStyle = item.token.color || visuals.inactiveWordColor || '#111111';
+              ctx.fillText(item.token.word, lineX, y);
+            }
             ctx.restore();
-            lineX += wWidth;
+            lineX += item.width;
           });
         });
       }
       ctx.restore();
     }
 
-    // 5. Draw Progress / Visualizer (Bottom-Left)
     const clipDuration = Math.max(0.1, clipEnd - clipStart);
     const progress = Math.min(1.0, Math.max(0.0, (currentTime - clipStart) / clipDuration));
     const bottomY = height * 0.88;
 
     ctx.save();
     if (visuals.visualizerStyle === 'minimal_dot') {
-      // Minimal line with circle dot scrubber (matching screenshot 1)
       const barWidth = width * 0.22;
       const barHeight = Math.round(height * 0.016);
       const dotRadius = Math.round(barHeight * 1.35);
 
-      // Background track pill
       ctx.fillStyle = visuals.visualizerColor || '#111111';
       ctx.beginPath();
       ctx.roundRect(padX, bottomY - barHeight / 2, barWidth, barHeight, barHeight / 2);
       ctx.fill();
 
-      // Scrubber dot position
       const dotX = padX + progress * barWidth;
       ctx.beginPath();
       ctx.arc(dotX, bottomY, dotRadius, 0, Math.PI * 2);
       ctx.fillStyle = visuals.visualizerColor || '#111111';
       ctx.fill();
     } else {
-      // Audio Waveform Spectrum Bars (Style B)
       const barCount = 20;
       const totalWidth = width * 0.32;
       const barWidth = (totalWidth / barCount) * 0.55;
@@ -236,7 +345,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       ctx.fillStyle = visuals.visualizerColor || '#111111';
       for (let i = 0; i < barCount; i++) {
         const x = padX + i * (totalWidth / barCount);
-        // Animated simulated frequency response based on progress and sine oscillation
         const wave = Math.sin(currentTime * 8 + i * 0.7) * 0.5 + 0.5;
         const barH = Math.max(4, wave * maxBarHeight);
         ctx.beginPath();
@@ -246,7 +354,6 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
     }
     ctx.restore();
 
-    // 6. Draw CTA Badge (Bottom-Right)
     if (visuals.ctaText) {
       ctx.save();
       const badgeFontSize = Math.round(width * 0.042);
@@ -259,22 +366,19 @@ export const VideoCanvas: React.FC<VideoCanvasProps> = ({
       const badgeX = width - padX - badgeW;
       const badgeY = bottomY - badgeH / 2;
 
-      // Rounded pill badge
       ctx.fillStyle = visuals.ctaBgColor || '#222222';
       ctx.beginPath();
       ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 12);
       ctx.fill();
 
-      // Badge Text
       ctx.fillStyle = visuals.ctaTextColor || '#F5A623';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(visuals.ctaText, badgeX + badgeW / 2, badgeY + badgeH / 2);
       ctx.restore();
     }
-  }, [visuals, currentTime, clipStart, clipEnd, segments, logoImage, width, height]);
+  }, [visuals, currentTime, clipStart, clipEnd, segments, overlays, logoImage, mediaImages, width, height]);
 
-  // Determine aspect ratio class for responsive preview container
   const getContainerAspect = () => {
     switch (visuals.aspectRatio) {
       case '9:16':
